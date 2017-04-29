@@ -6,11 +6,10 @@
 
 int main(int argc, char *argv[])
 {
+    qDebug() << "AccessServer Started";
 
-    QCoreApplication a(argc, argv);
-    QString port = "COM13";
-    if (argc >= 2) port = argv[1];
-    BusMngr mngr(port);
+	QCoreApplication a(argc, argv);
+	BusMngr mngr("COM1");
 
     return a.exec();
 }

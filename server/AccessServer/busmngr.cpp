@@ -27,22 +27,23 @@ using namespace std;
 #define SET_IDLE 6
 #define ACKNOWLEDGE 7
 
-BusMngr::BusMngr(QString comPort):
+BusMngr::BusMngr(QString __attribute__((unused))comPort):
         bus(QextSerialPort::EventDriven),
         busPrinter(bus),
         protocolDriver(busPrinter),
         deviceIdx(0),
         db(QSqlDatabase::addDatabase("QMYSQL"))
 {
+    qDebug() << "BusMngr loading";
 
     QString conffile = QString(QCoreApplication::applicationDirPath() + "/AccessServer.conf");
     QSettings settings(conffile, QSettings::IniFormat);
 
     if (settings.status() != QSettings::NoError)
     {
-        int f;
-        f = 1;
+		exit(-1);
     }
+
     QVariant addrV = settings.value("doorAddresses", "1");
     QStringList addrs = addrV.toStringList();
     QString addr;
@@ -143,11 +144,9 @@ void BusMngr::onRtsTimeout()
     bus.setRts(true);
 }
 
-
-void BusMngr::onBytesWritten(qint64 byteCount)
+void BusMngr::onBytesWritten(qint64 __attribute__((unused))byteCount)
 {   
-
-
+	
 }
 
 void BusMngr::advanceDevice()
@@ -265,284 +264,154 @@ AuthReply BusMngr::isAuthorized(QString id, QString addr)
     QString conffile = QString(QCoreApplication::applicationDirPath() + "/AccessServer.conf");
     QSettings settings(conffile, QSettings::IniFormat);
     AuthReply reply;
+	// Default access denied
+	reply.accessGranted = false;
     bool convert_ok = false;
+	int door_addr = addr.toInt(&convert_ok, 16);
+    
+	qDebug() << "addr: " << addr << " door_addr: " << door_addr;
+    
+	QString query_str = 
+		"SELECT "
+		"	m.member_id AS member_id, m.name AS member_name, r.name AS reader_name, m.expires AS member_expires "
+        "FROM "
+		"	member m "
+		"	INNER JOIN keycode k "
+		"		ON m.member_id = k.member_id "
+		"	INNER JOIN reader r "
+		"WHERE "
+		"	k.keycode_id = '" + id + "' "
+		"	AND r.reader_id = " + QString::number(door_addr, 10) + " "
+		"	AND DATE_ADD(m.expires, INTERVAL 7 DAY) > NOW()";
 
-    int door_addr = addr.toInt(&convert_ok, 16);
-    qDebug() << "addr: " << addr << " door_addr: " << door_addr;
-    QString query_str =  "select username,role,door_desc,hashes.user_id AS user_id,"
-                         "  door_roles.role_id AS role_id, user_roles.expiration AS expiration "
-                         "from hashes,roles,doors,door_roles,user_roles,role_access_times "
-                         "where roles.role_id=door_roles.role_id "
-                         "  and doors.door_address=door_roles.door_address"
-                         "  and door_roles.role_id = user_roles.role_id"
-                         "  and roles.role_id=role_access_times.role_id"
-                         "  and hashes.user_id = user_roles.user_id"
-                         "  and hashes.hash_id = md5(\"" + id + "\") "
-                         "  and doors.door_address = "
-                         + QString::number(door_addr, 10) +
-                         "  and user_roles.expiration > NOW()"
-                         "  and role_access_times.day_of_week = DAYOFWEEK(NOW())"
-                         "  and role_access_times.starttime <= CURTIME()"
-                         "  and role_access_times.stoptime > CURTIME();";
-
-    if (!db.isOpen()) db.open();
-    QSqlQuery query(db);
-    if (query.exec(query_str))
+    if (!db.isOpen()) 
+		db.open();
+    
+	QSqlQuery query(db);
+    
+	if (query.exec(query_str))
     {
-        int username_field = query.record().indexOf("username");
-        int user_id_field = query.record().indexOf("user_id");
-        int role_field = query.record().indexOf("role");
-        int role_id_field = query.record().indexOf("role_id");
-        int door_field = query.record().indexOf("door_desc");
-        int expiration_field = query.record().indexOf("expiration");
+        int user_id_field = query.record().indexOf("member_id");
+        int username_field = query.record().indexOf("member_name");
+        int door_field = query.record().indexOf("reader_name");
+        int expiration_field = query.record().indexOf("member_expires");
 
         if (query.next())
         {
-            //access granted
+            // Explicit access granted
             reply.accessGranted = true;
             QString member_name = query.value(username_field).toString();
             QString expiration = query.value(expiration_field).toString().left(10);
-            if (member_name.length() > 16) member_name.chop(member_name.length() - 16);
-            if (member_name.length() < 16)
+            if (member_name.length() > 16)
+				member_name.chop(member_name.length() - 16);
+			else if (member_name.length() < 16)
             {
                 int spaces = 16 - member_name.length();
                 int rspaces = spaces / 2;
                 int lspaces = spaces - rspaces;
                 reply.line1 = QString(lspaces, QChar(' ')) + member_name + QString(rspaces, QChar(' '));
             }
-            reply.line2 = "Exp: " + expiration;
+
+            reply.line2 = "Renew " + expiration;
             
-            //todo log file and db - Done - Tony
-            Log(query.value(user_id_field).toInt(), member_name, true, door_addr, query.value(door_field).toString(), query.value(role_id_field).toInt(), query.value(role_field).toString());
+            Log(query.value(user_id_field).toInt(), 
+				member_name,
+				expiration,	
+				true, 
+				door_addr, 
+				query.value(door_field).toString());
             db.close();
         }
         else
         {
-            //access denied
-            //todo auxillary query to determine if it was a role failure.
-            reply.accessGranted = false;
-            //todo log file and db
-            bool known = false;
-            QString out_side_time_window_query_str =  "select username,role,door_desc,hashes.user_id AS user_id,"
-                         "  door_roles.role_id AS role_id, user_roles.expiration AS expiration "
-                         "from hashes,roles,doors,door_roles,user_roles,role_access_times "
-                         "where roles.role_id=door_roles.role_id "
-                         "  and doors.door_address=door_roles.door_address"
-                         "  and door_roles.role_id = user_roles.role_id"
-                         "  and roles.role_id=role_access_times.role_id"
-                         "  and hashes.user_id = user_roles.user_id"
-                         "  and hashes.hash_id = md5(\"" + id + "\") "
-                         "  and doors.door_address = "
-                         + QString::number(door_addr, 10) +
-                         "  and user_roles.expiration > NOW()"
-                         "  and role_access_times.day_of_week = DAYOFWEEK(NOW());";
-                        
-            
+			QString expired_str = 
+		        "SELECT "
+				"	m.member_id AS member_id, m.name AS member_name, r.name AS reader_name, m.expires AS member_expires "
+                "FROM "
+		       	"	member m "
+				"	INNER JOIN keycode k "
+				"		ON m.member_id = k.member_id "
+				"	INNER JOIN reader r "
+				"WHERE "
+				"	k.keycode_id = '" + id + "' "
+				"	AND r.reader_id = " + QString::number(door_addr, 10);
            
-            QSqlQuery ostw_query(db);
-            
-            if (ostw_query.exec(out_side_time_window_query_str))
-            {
-                if (ostw_query.next())
-                {
-                    int username_field = ostw_query.record().indexOf("username");
-                    int user_id_field = ostw_query.record().indexOf("user_id");
-                    int role_field = ostw_query.record().indexOf("role");
-                    int role_id_field = ostw_query.record().indexOf("role_id");
-                    int door_field = ostw_query.record().indexOf("door_desc");
-                    int expiration_field = ostw_query.record().indexOf("expiration");
-
-                    reply.line1 = "Access Denied";
-                    reply.line2 = "Wrong Time";  
-                    known = true;
-                    Log(ostw_query.value(user_id_field).toInt(), 
-                        query.value(username_field).toString(), 
-                        false, 
-                        door_addr, 
-                        ostw_query.value(door_field).toString(), 
-                        ostw_query.value(role_id_field).toInt(), 
-                        ostw_query.value(role_field).toString());       
-                }
-                
-            }
-
-            QString wrong_day_str =  "select username,role,door_desc,hashes.user_id AS user_id,"
-                         "  door_roles.role_id AS role_id, user_roles.expiration AS expiration "
-                         "from hashes,roles,doors,door_roles,user_roles,role_access_times "
-                         "where roles.role_id=door_roles.role_id "
-                         "  and doors.door_address=door_roles.door_address"
-                         "  and door_roles.role_id = user_roles.role_id"
-                         "  and roles.role_id=role_access_times.role_id"
-                         "  and hashes.user_id = user_roles.user_id"
-                         "  and hashes.hash_id = md5(\"" + id + "\") "
-                         "  and doors.door_address = "
-                         + QString::number(door_addr, 10) +
-                         "  and user_roles.expiration > NOW()"
-                         "  and role_access_times.day_of_week <> DAYOFWEEK(NOW());";
-
-            QSqlQuery wrong_day_query(db);
-
-            if (!known && wrong_day_query.exec(wrong_day_str))
-            {
-                int username_field = wrong_day_query.record().indexOf("username");
-                int user_id_field = wrong_day_query.record().indexOf("user_id");
-                int role_field = wrong_day_query.record().indexOf("role");
-                int role_id_field = wrong_day_query.record().indexOf("role_id");
-                int door_field = wrong_day_query.record().indexOf("door_desc");
-                int expiration_field = wrong_day_query.record().indexOf("expiration");
-
-                if (wrong_day_query.next())
-                {
-                    reply.line1 = "Access Denied";
-                    reply.line2 = "Wrong Day";  
-                    known = true;
-                    Log(wrong_day_query.value(user_id_field).toInt(), 
-                        query.value(username_field).toString(), 
-                        false, 
-                        door_addr, 
-                        wrong_day_query.value(door_field).toString(), 
-                        wrong_day_query.value(role_id_field).toInt(), 
-                        wrong_day_query.value(role_field).toString());  
-                }
-                
-            }
-
-            QString expired_str =  "select username,role,door_desc,hashes.user_id AS user_id,"
-                         "  door_roles.role_id AS role_id, user_roles.expiration AS expiration "
-                         "from hashes,roles,doors,door_roles,user_roles,role_access_times "
-                         "where roles.role_id=door_roles.role_id "
-                         "  and doors.door_address=door_roles.door_address"
-                         "  and door_roles.role_id = user_roles.role_id"
-                         "  and roles.role_id=role_access_times.role_id"
-                         "  and hashes.user_id = user_roles.user_id"
-                         "  and hashes.hash_id = md5(\"" + id + "\") "
-                         "  and doors.door_address = "
-                         + QString::number(door_addr, 10) +
-                         "  and user_roles.expiration <= NOW();";
-                        ;
-
             QSqlQuery expired_query(db);
-
-            if (!known && expired_query.exec(expired_str))
+            
+            if (expired_query.exec(expired_str))
             {
-                int username_field = expired_query.record().indexOf("username");
-                int user_id_field = expired_query.record().indexOf("user_id");
-                int role_field = expired_query.record().indexOf("role");
-                int role_id_field = expired_query.record().indexOf("role_id");
-                int door_field = expired_query.record().indexOf("door_desc");
-                int expiration_field = expired_query.record().indexOf("expiration");
-
+		        int user_id_field = query.record().indexOf("member_id");
+			    int username_field = query.record().indexOf("member_name");
+				int door_field = query.record().indexOf("reader_name");
+				int expiration_field = query.record().indexOf("member_expires");
+				
                 if (expired_query.next())
                 {
-                    reply.line1 = "Denied: Expired";
+                    reply.line1 = "Member Expired";
                     reply.line2 = "Exp'd " + expired_query.value(expiration_field).toString().left(10); 
-                    known = true;
                     Log(expired_query.value(user_id_field).toInt(), 
-                        query.value(username_field).toString(), 
+                        expired_query.value(username_field).toString(), 
+						expired_query.value(expiration_field).toString(),
                         false, 
                         door_addr, 
-                        expired_query.value(door_field).toString(), 
-                        expired_query.value(role_id_field).toInt(), 
-                        expired_query.value(role_field).toString());  
+                        expired_query.value(door_field).toString()); 
                 }
-            }
-
-
-	     QString exists_str =  "select username from hashes "
-                         "where "
-                         "hash_id = md5(\"" + id + "\"); ";
-                       
-            QSqlQuery exists_query(db);
-	     
-	     if (!known && exists_query.exec(exists_str))
-	     {
-                int username_field = exists_query.record().indexOf("username");
-
-                if (exists_query.next())
-                {
-                    reply.line1 = "Misconfigured";
-                    reply.line2 = "User " + query.value(username_field).toString(); 
-                    known = true;
-                    Log(-1, 
-                        query.value(username_field).toString(), 
-                        false, 
-                        -1, 
-                        "Not Checked", 
-                        -1, 
-                        "Not Checked");  
-                }
-
-            }
-
-            if (!known)
-            {
-                reply.line1 = "User";
-                reply.line2 = "Unknown!";
-                QString door_desc = GetDoorDesc(door_addr);
-                Log(-1, "Unknown user(" + id + ")", false, door_addr, door_desc, -1, "No Role");
+				else
+				{
+	                reply.line1 = "User";
+		            reply.line2 = "Unknown!";
+			        QString door_desc = GetDoorDesc(door_addr);
+				    Log(
+						-1, 
+						"Unknown Key: '" + id + "'", 
+						"Unknown",
+						false, 
+						door_addr, 
+						door_desc);
+				}
             }
         }
     }
     else
     {
-        return authFromFile(id, addr);
-    }
-    return reply;
-}
-
-
-AuthReply BusMngr::authFromFile(QString id, QString addr)
-{
-    AuthReply reply;
-    QString conffile = QString(QCoreApplication::applicationDirPath() + "/idlist.ini");
-    QSettings idList(conffile, QSettings::IniFormat);
-    QVariant notlisted("not listed");
-    QString member_name = idList.value(id, notlisted).toString();
-    QString msg;
-    if (member_name == notlisted.toString())
-    {
-        reply.accessGranted = false;
-        reply.line1 = "     Access";
-        reply.line2 = "     Denied!";
-        msg = "Access Denied for " + id + " at the door addressed " + addr + " (FILE)";
-        Log(msg);
-    }
-    else
-    {
-        reply.accessGranted = true;
-        reply.line1 = "    Welcome    ";
-        if (member_name.length() > 16) member_name.chop(member_name.length() - 16);
-        if (member_name.length() < 16)
-        {
-            int spaces = 16 - member_name.length();
-            int rspaces = spaces / 2;
-            int lspaces = spaces - rspaces;
-            reply.line2 = QString(lspaces, QChar(' ')) + member_name + QString(rspaces, QChar(' '));
-        }
-        msg = "Access Granted at the door addressed " + addr + " for user " + member_name + " (FILE)";
-        Log(msg);
+		reply.line1 = "Database Offline";
+		reply.line2 = "Reader Disabled!";
+		QString door_desc = GetDoorDesc(door_addr);
+		Log(
+			-1, 
+			"Database not responding! Key: '" + id + "'", 
+			"Unknown",
+			false, 
+			door_addr, 
+			door_desc);
     }
 
     return reply;
 }
-
 
 void BusMngr::LogNetEvent(int door_addr, bool online)
 {
-    QString query_str = "insert into network_events(door_address, online, event_time) ";
-            query_str += "values(" + QString::number(door_addr, 10) + "," + (online ? "true," : "false,") +
-                    "'" + QDateTime::currentDateTime().toString(Qt::ISODate) + "');";
+    QString query_str = 
+		"INSERT INTO "
+		"	network_event (reader_id, online, event_time) ";
+		"VALUES "
+		"	(" + QString::number(door_addr, 10) + 
+		"	, " + (online ? "1" : "0") +
+		"	, NOW());";
     QSqlQuery query(db);
     query.exec(query_str);
 }
 
-void BusMngr::Log(int user_id, QString username, bool accessGranted, int door_address, QString door_desc, int role_id, QString role)
+void BusMngr::Log(int user_id, QString username, QString expired, bool accessGranted, int door_address, QString door_desc)
 {
-    QString ctime = QDate::currentDate().toString(Qt::ISODate) + " " + QTime::currentTime().toString(Qt::ISODate);
-    QString query_str = "insert into access_attempts(user_id,door_address,role_id,access_granted,attempt_time) "
-                        "values(" + QString::number(user_id, 10) + "," + QString::number(door_address, 10) +
-                        "," + QString::number(role_id, 10) + "," + (accessGranted ? "true," : "false,") +
-                        "'" + ctime + "');";
+    QString query_str = 
+		"INSERT INTO "
+		"	attempt (member_id, reader_id, access_granted, attempt_time) "
+		"VALUES "
+		"	(" + QString::number(user_id, 10) + 
+		"	, " + QString::number(door_address, 10) + 
+		"	, " + (accessGranted ? "1" : "0") +
+        "	, NOW());";
 
     QSqlQuery query(db);
     if (!query.exec(query_str))
@@ -551,12 +420,7 @@ void BusMngr::Log(int user_id, QString username, bool accessGranted, int door_ad
     }
 
     QString msg = "Access " + (accessGranted ? QString("Granted") : QString("Denied")) + " at " + door_desc +
-    " for user " + username;
-
-    if (accessGranted)
-    {
-        msg = msg + " due to assigned role '" + role + "' (DB)";
-    }
+    " for user '" + username + "', expiration '" + expired + "'";
 
     QString conffile = QString(QCoreApplication::applicationDirPath() + "/AccessServer.conf");
     QSettings settings(conffile, QSettings::IniFormat);
@@ -565,11 +429,11 @@ void BusMngr::Log(int user_id, QString username, bool accessGranted, int door_ad
 
     QFile file(log_fname);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Append))
-             return;
+		return;
 
     QTextStream out(&file);
-    out << ctime << ": " << msg << endl;
-
+    QString ctime = QDate::currentDate().toString(Qt::ISODate) + " " + QTime::currentTime().toString(Qt::ISODate);
+	out << ctime << ": " << msg << endl;
 }
 
 void BusMngr::Log(QString msg)
@@ -581,15 +445,12 @@ void BusMngr::Log(QString msg)
 
     QFile file(log_fname);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Append))
-             return;
+		return;
 
     QTextStream out(&file);
     QString ctime = QDate::currentDate().toString(Qt::ISODate) + " " + QTime::currentTime().toString(Qt::ISODate);
     out << ctime << ": " << msg << endl;
-
 }
-
-
 
 void BusMngr::DelayMs(int ms)
 {
@@ -636,10 +497,10 @@ void BusMngr::onAboutToClose()
 
 QString BusMngr::GetDoorDesc(int door_addr)
 {
-    QString query_str = "select door_desc from doors where door_address = " + QString::number(door_addr, 10) + ";";
+    QString query_str = "SELECT name FROM reader WHERE reader_id = " + QString::number(door_addr, 10) + ";";
     QSqlQuery query(db);
     query.exec(query_str);
-    QString door_desc = "Unnamed Door";
+    QString door_desc = "Unnamed Reader";
     if (query.next())
     {
         door_desc = query.value(0).toString();

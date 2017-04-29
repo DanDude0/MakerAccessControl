@@ -60,7 +60,7 @@ protected:
     void startBus();
     void DelayMs(int ms);
     BusState busState;
-    static const int timeout = 300; //TODO lower this value
+    static const int timeout = 300;
 
     QTimer busTimer;
     QTimer rtsTimer;
@@ -74,12 +74,11 @@ protected:
     void checkID();
     void recvAck();
     void Log(QString msg);
-    void Log(int user_id, QString username, bool accessGranted, int door_address, QString door_desc, int role_id, QString role);
+    void Log(int user_id, QString username, QString expired, bool accessGranted, int door_address, QString door_desc);
     void LogNetEvent(int door_addr, bool online);
     QString GetDoorDesc(int door_addr);
 
     AuthReply isAuthorized(QString id, QString addr);
-    AuthReply authFromFile(QString id, QString addr);
     QSqlDatabase db;
 
 };
