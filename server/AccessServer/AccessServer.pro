@@ -9,8 +9,9 @@ CONFIG += console
 CONFIG -= app_bundle
 TEMPLATE = app
 unix {
-INCLUDEPATH += /home/royce/QExtSerial/src
-LIBS += -L'/home/royce/QExtSerial/src/build/'
+INCLUDEPATH += /usr/include /usr/include/QtExtSerialPort/
+LIBS += -L'/usr/lib'
+LIBS += -L'/usr/include/QtExtSerialPort/'
 }
 win32 {
 INCLUDEPATH += C:\Qt\QExtSerial\src

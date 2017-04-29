@@ -407,7 +407,7 @@ AuthReply BusMngr::isAuthorized(QString id, QString addr)
                 
             }
 
-             QString expired_str =  "select username,role,door_desc,hashes.user_id AS user_id,"
+            QString expired_str =  "select username,role,door_desc,hashes.user_id AS user_id,"
                          "  door_roles.role_id AS role_id, user_roles.expiration AS expiration "
                          "from hashes,roles,doors,door_roles,user_roles,role_access_times "
                          "where roles.role_id=door_roles.role_id "
@@ -447,12 +447,39 @@ AuthReply BusMngr::isAuthorized(QString id, QString addr)
                 }
             }
 
+
+	     QString exists_str =  "select username from hashes "
+                         "where "
+                         "hash_id = md5(\"" + id + "\"); ";
+                       
+            QSqlQuery exists_query(db);
+	     
+	     if (!known && exists_query.exec(exists_str))
+	     {
+                int username_field = exists_query.record().indexOf("username");
+
+                if (exists_query.next())
+                {
+                    reply.line1 = "Misconfigured";
+                    reply.line2 = "User " + query.value(username_field).toString(); 
+                    known = true;
+                    Log(-1, 
+                        query.value(username_field).toString(), 
+                        false, 
+                        -1, 
+                        "Not Checked", 
+                        -1, 
+                        "Not Checked");  
+                }
+
+            }
+
             if (!known)
             {
                 reply.line1 = "User";
                 reply.line2 = "Unknown!";
                 QString door_desc = GetDoorDesc(door_addr);
-                Log(-1, "Unknown user", false, door_addr, door_desc, -1, "No Role");
+                Log(-1, "Unknown user(" + id + ")", false, door_addr, door_desc, -1, "No Role");
             }
         }
     }
